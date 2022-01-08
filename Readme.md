@@ -1,17 +1,27 @@
 # Svelte outin transition
 
-# Flow
+## States
 
-## Intro start
+IDLE
+IDLE -> OUTRO
+OUTRO -> DELAYED_INTRO_HIDDEN
+DELAYED_INTRO_HIDDEN -> DELAYED_INTRO_VISIBLE
+DELAYED_INTRO_VISIBLE -> IDLE
 
-- Register node
-- Register cleanup
-- local duration 0: (0 means no outro active)
-  - regular transition
-- local duration 0: (outro active)
-  - same node?
-    - regular transition
-  - not same node
-    - add register and add class
+(when outro is called on intro node)
 
-<!-- - Check outro nodes -->
+DELAYED_INTRO_HIDDEN -> UNDO
+DELAYED_INTRO_VISIBLE -> UNDO
+UNDO -> IDLE
+
+(when intro is called on outro node)
+UNDO -> REDO
+REDO -> IDLE
+
+REDO -> UNDO
+
+## Tests
+
+(cubes, linear)
+
+only duration

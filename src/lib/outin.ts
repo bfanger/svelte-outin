@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import { append_styles } from "svelte/internal";
 import type { TransitionConfig } from "svelte/transition";
 
@@ -5,70 +6,127 @@ type Transition = (node: HTMLElement, options?: any) => TransitionConfig;
 export default function outin<
   O extends Transition,
   I extends Transition
->(transition: {
+>(settings: // | { transition: I | [I, Parameters<I>[1]]; }
+{
   out: O | [O, Parameters<O>[1]];
   in: I | [I, Parameters<I>[1]];
 }): [O, I] {
+  if (typeof document !== "undefined") {
+    append_styles(
+      undefined as any,
+      "outin",
+      `.svelte-outin {
+        position: absolute !important;
+      }`
+    );
+  }
   let outroNode: HTMLElement | undefined;
   let introNode: HTMLElement | undefined;
-  let wait = 0;
-  let reversed = false;
+  let outroDuration = 0;
 
-  function reset() {
-    introNode?.classList.remove("svelte-outin-hidden");
-    outroNode?.removeEventListener("outroend", reset);
-    introNode = undefined;
-    outroNode = undefined;
-    wait = 0;
-    reversed = false;
-  }
+  let state = "IDLE";
+  const className = "svelte-outin";
 
-  function transitionOut(node: HTMLElement, options: any): TransitionConfig {
-    const [fn, params] = Array.isArray(transition.out)
-      ? transition.out
-      : [transition.out, {}];
+  function outro(node: HTMLElement, options: any): TransitionConfig {
+    const [fn, params] = Array.isArray(settings.out)
+      ? settings.out
+      : [settings.out, {}];
     const config = fn(node, { ...params, ...options });
-    if (node === introNode && node !== outroNode) {
-      reset();
-      reversed = true;
-    }
+
+    introNode?.removeEventListener("introend", onIntroEnd);
+    outroNode?.removeEventListener("outroend", onOutroEnd);
     outroNode = node;
-    if (reversed) {
-      wait = 0;
+
+    outroDuration = (config.duration ?? 0) + (config.delay ?? 0);
+    if (state === "IDLE") {
+      state = "OUTRO";
+      console.log("outro: IDLE -> OUTRO");
+      outroNode.addEventListener("outroend", onOutroEnd);
+    } else if (state === "DELAYED_INTRO_VISIBLE") {
+      state = "UNDO_SHOWING";
+      console.log(`outro: DELAYED_INTRO_VISIBLE -> UNDO_SHOWING`);
+      outroNode.classList.add(className);
+    } else if (state === "DELAYED_INTRO_HIDDEN") {
+      state = "UNDO_SHOWING";
+      console.log(`outro: DELAYED_INTRO_HIDDEN -> UNDO_SHOWING`);
+      //   introNode?.classList.remove(className);
+      outroNode.classList.add(className);
+    } else if (state === "UNDO_HIDING") {
+      state = "OUTRO";
+      console.log("outro: UNDO_HIDING -> OUTRO"); // redo
+      outroNode.classList.remove(className);
+      outroNode.addEventListener("outroend", onOutroEnd);
     } else {
-      wait = (config.duration ?? 0) + (config.delay ?? 0);
+      console.warn("outro", { state });
     }
     return config;
   }
 
-  function transitionIn(node: HTMLElement, options: any): TransitionConfig {
-    const [fn, params] = Array.isArray(transition.in)
-      ? transition.in
-      : [transition.in, {}];
-    introNode = node;
-    if (reversed === false && wait === 0) {
-      return fn(node, { ...params, ...options });
+  function onOutroEnd() {
+    outroNode?.removeEventListener("outroend", onOutroEnd);
+    if (state === "DELAYED_INTRO_HIDDEN") {
+      introNode?.classList.remove(className);
+      state = "DELAYED_INTRO_VISIBLE";
+      console.log("outroEnd: DELAYED_INTRO_HIDDEN -> DELAYED_INTRO_VISIBLE");
+    } else {
+      console.warn("outroEnd", { state });
     }
-    append_styles(
-      undefined as any,
-      "outin",
-      `.svelte-outin-hidden {
-        position: absolute !important;
-      }`
-    );
+  }
+
+  function intro(node: HTMLElement, options: any): TransitionConfig {
+    const [fn, params] = Array.isArray(settings.in)
+      ? settings.in
+      : [settings.in, {}];
+    introNode?.removeEventListener("introend", onIntroEnd);
+    introNode = node;
+
     const config = fn(node, {
       ...params,
       ...options,
     });
-    if (reversed) {
-      outroNode?.classList.add("svelte-outin-hidden");
-      node.classList.remove("svelte-outin-hidden");
+    if (state === "OUTRO") {
+      if (outroDuration === 0) {
+        // @todo
+      }
+      config.delay = outroDuration + (config.delay ?? 0);
+      state = "DELAYED_INTRO_HIDDEN";
+      console.log("intro: OUTRO -> DELAYED_INTRO_HIDDEN");
+      node.classList.add(className);
+      introNode.addEventListener("introend", onIntroEnd);
+    } else if (state === "UNDO_SHOWING") {
+      state = "UNDO_HIDING";
+      console.log("intro: UNDO_SHOWING -> UNDO_HIDING");
+      // @todo delay reshowing?
+      introNode.classList.remove(className);
+      introNode.addEventListener("introend", onIntroEnd);
     } else {
-      node.classList.add("svelte-outin-hidden");
-      config.delay = wait + (config.delay ?? 0);
+      console.warn("intro", { state });
     }
-    outroNode?.addEventListener("outroend", reset);
     return config;
   }
-  return [transitionOut as O, transitionIn as I];
+
+  function onIntroEnd() {
+    introNode?.removeEventListener("introend", onIntroEnd);
+    if (state === "DELAYED_INTRO_VISIBLE") {
+      state = "IDLE";
+      console.log("introEnd: DELAYED_INTRO_VISIBLE -> IDLE");
+      introNode = undefined;
+      outroNode = undefined;
+    } else if (state === "DELAYED_INTRO_HIDDEN") {
+      introNode?.classList.remove(className);
+      outroNode?.classList.add(className);
+      state = "IDLE";
+      console.log("introEnd: DELAYED_INTRO_HIDDEN -> IDLE");
+      outroNode?.removeEventListener("outroend", onOutroEnd);
+    } else if (state === "UNDO_HIDING") {
+      state = "IDLE";
+      console.log("introEnd: UNDO_HIDING -> IDLE");
+      introNode = undefined;
+      outroNode = undefined;
+    } else {
+      console.warn("introEnd:", { state });
+    }
+  }
+
+  return [outro as O, intro as I];
 }
