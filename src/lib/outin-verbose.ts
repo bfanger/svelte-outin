@@ -2,7 +2,7 @@
 import { append_styles } from "svelte/internal";
 import type { TransitionConfig } from "svelte/transition";
 
-type Transition = (node: HTMLElement, options?: any) => TransitionConfig;
+type Transition = (node: Element, options?: any) => TransitionConfig;
 function outin<T extends Transition>(settings: {
   transition: T | [T, Parameters<T>[1]];
 }): [T, T];
@@ -15,124 +15,229 @@ function outin<O extends Transition, I extends Transition>(settings: {
   out?: O | [O, Parameters<O>[1]];
   in?: I | [I, Parameters<I>[1]];
 }): [O, I] {
-  let outroNode: HTMLElement | undefined;
-  let introNode: HTMLElement | undefined;
-  let outroDuration = 0;
-  const [IDLE, OUTRO, INTRO_DELAYED, INTRO, ABORTED, UNDO] = [1, 2, 3, 4, 5, 6];
-  let state = IDLE;
+  const states = [
+    "INIT",
+    "OUTRO",
+    "INTRO_DELAYED",
+    "INTRO",
+    "COMPLETED",
+    "ABORTED",
+    "UNDO",
+  ] as const;
+  const [INIT, OUTRO, INTRO_DELAYED, INTRO, COMPLETED, ABORTED, UNDO] = states;
   const className = "svelte-outin";
-  let outFn: Transition;
-  let outParams: any;
-  let inFn: Transition;
-  let inParams: any;
-  if (settings.transition) {
-    [outFn, outParams] = Array.isArray(settings.transition)
-      ? settings.transition
-      : [settings.transition, {}];
-    inFn = outFn;
-    inParams = outParams;
-  } else {
-    [outFn, outParams] = Array.isArray(settings.out)
-      ? settings.out
-      : [settings.out as Transition, {}];
-    [inFn, inParams] = Array.isArray(settings.in)
-      ? settings.in
-      : [settings.in as Transition, {}];
+
+  type OutInActive = {
+    state: typeof states[number];
+    delay: number;
+    out: Element;
+    in?: Element;
+  };
+  const concurrent: Record<number | string, OutInActive> = {};
+  function findActive(
+    node: Element
+  ): [OutInActive | undefined, string | number] {
+    const found = Object.entries(concurrent).find(
+      ([, entry]) => entry.out === node || entry.in === node
+    );
+    if (found) {
+      return [found[1], found[0]];
+    }
+    return [undefined, -1];
   }
+  let idle = true;
+  const starting: OutInActive[] = [];
+  let autoincrement = 0;
 
-  function outro(node: HTMLElement, options: any): TransitionConfig {
+  function splitOptions<T extends Transition>(
+    transition: T | [T, Parameters<T>[1]]
+  ): [Transition, Parameters<T>[1]] {
+    return Array.isArray(transition) ? transition : [transition, {}];
+  }
+  const [outFn, outParams] = settings.out
+    ? splitOptions(settings.out)
+    : splitOptions(settings.transition as Transition);
+  const [inFn, inParams] = settings.in
+    ? splitOptions(settings.in)
+    : splitOptions(settings.transition as Transition);
+
+  function outro(node: Element, options: any): TransitionConfig {
     const config = outFn(node, { ...outParams, ...options });
-
-    outroNode?.removeEventListener("outroend", onOutroEnd);
-    outroNode?.classList.remove(className);
-    outroNode = node;
-    const { position } = window.getComputedStyle(outroNode);
+    const { position } = window.getComputedStyle(node);
     if (["fixed", "absolute"].indexOf(position) === -1) {
       append_styles(
         node,
         "outin",
         `.svelte-outin { position: absolute !important; }`
       );
-      outroNode.classList.add(className);
+      node.classList.add(className);
+    }
+    let [active] = findActive(node);
+    if (active) {
+      if (idle) {
+        active.out = node;
+        active.in = undefined;
+      }
+    } else if (idle) {
+      active = {
+        delay: (config.duration ?? 0) + (config.delay ?? 0),
+        out: node,
+        in: undefined,
+        state: INIT,
+      };
+      autoincrement += 1;
+      concurrent[autoincrement] = active;
+      console.log(`outro: -> INIT (${autoincrement})`);
+    } else {
+      console.warn("hmm", { idle, active });
+      return config;
+      // active = concurrent[autoincrement];
+    }
+    const first = idle;
+    if (idle) {
+      starting.push(active);
     }
 
-    outroDuration = (config.duration ?? 0) + (config.delay ?? 0);
-    if (state === IDLE) {
-      state = OUTRO;
-      console.log("outro: IDLE -> OUTRO");
-      outroNode.addEventListener("outroend", onOutroEnd);
-    } else if (state === INTRO) {
-      state = UNDO;
+    if (active.state === INIT) {
+      if (first) {
+        active.state = OUTRO;
+        console.log("outro: INIT -> OUTRO");
+        node.addEventListener("outroend", onOutroEnd);
+      }
+    } else if (active.state === INTRO) {
+      active.state = UNDO;
       console.log(`outro: INTRO -> UNDO`);
-    } else if (state === INTRO_DELAYED) {
-      state = ABORTED;
+    } else if (active.state === INTRO_DELAYED) {
+      active.state = ABORTED;
       console.log(`outro: INTRO_DELAYED -> ABORTED`);
+    } else if (
+      active.state === OUTRO ||
+      active.state === ABORTED ||
+      active.state === UNDO
+    ) {
+      if (first) {
+        console.warn("outro", active.state);
+      }
+      // second
     } else {
-      console.warn(OUTRO, { state });
+      console.warn("outro", active.state);
     }
     return config;
   }
 
-  function onOutroEnd() {
-    outroNode?.removeEventListener("outroend", onOutroEnd);
-    if (state === INTRO_DELAYED) {
-      state = INTRO;
+  function onOutroEnd(e: any) {
+    const node = e.target;
+    node.removeEventListener("outroend", onOutroEnd);
+
+    const [active] = findActive(node);
+    if (!active) {
+      return;
+    }
+    if (active.state === INTRO_DELAYED) {
+      active.state = INTRO;
       console.log("outroEnd: INTRO_DELAYED -> INTRO");
     } else {
-      console.warn("outroEnd", { state });
+      console.warn("outroEnd", active.state);
     }
   }
 
-  function intro(node: HTMLElement, options: any): TransitionConfig {
-    introNode?.removeEventListener("introend", onIntroEnd);
-    introNode = node;
-    introNode.classList.remove(className);
-
+  function intro(node: Element, options: any): TransitionConfig {
+    node.classList.remove(className);
     const config = inFn(node, {
       ...inParams,
       ...options,
     });
-    if (state === OUTRO) {
-      if (outroDuration === 0) {
-        state = INTRO;
-        console.log("intro: OUTRO -> INTRO_DELAYED");
-        introNode.addEventListener("introend", onIntroEnd);
-      } else {
-        config.delay = outroDuration + (config.delay ?? 0);
-        state = INTRO_DELAYED;
-        console.log("intro: OUTRO -> INTRO_DELAYED");
-        introNode.addEventListener("introend", onIntroEnd);
+
+    let [active] = findActive(node);
+    if (idle) {
+      if (active) {
+        console.warn("?", active);
       }
-    } else if (state === ABORTED) {
-      state = INTRO;
-      console.log("intro: ABORTED -> INTRO");
-      introNode.addEventListener("introend", onIntroEnd);
-    } else if (state === UNDO) {
-      state = INTRO_DELAYED;
-      console.log("intro: UNDO -> INTRO_DELAYED");
-      config.delay = outroDuration + (config.delay ?? 0);
-      introNode.addEventListener("introend", onIntroEnd);
+      const startIndex = starting.findIndex((start) => start.in === undefined);
+      let last = true;
+      if (startIndex !== -1) {
+        active = starting[startIndex];
+        active.in = node;
+        last = startIndex === starting.length - 1;
+      } else {
+        console.warn("idle?");
+      }
+      if (last) {
+        idle = true;
+        starting.length = 0;
+      }
+    }
+    if (!active) {
+      // missing connected outro
+      idle = false;
+      starting.length = 0;
+      return config;
+    }
+
+    if (!active.in) {
+      active.in = node;
+    }
+    const first = active.in === node;
+    if (active.state === OUTRO) {
+      if (active.delay === 0) {
+        if (first) {
+          active.state = INTRO;
+          console.log("intro: OUTRO -> INTRO_DELAYED");
+          node.addEventListener("introend", onIntroEnd);
+        }
+      } else {
+        config.delay = active.delay + (config.delay ?? 0);
+        if (first) {
+          active.state = INTRO_DELAYED;
+          console.log("intro: OUTRO -> INTRO_DELAYED");
+          node.addEventListener("introend", onIntroEnd);
+        }
+      }
+    } else if (active.state === INTRO_DELAYED) {
+      config.delay = active.delay + (config.delay ?? 0);
+    } else if (active.state === ABORTED) {
+      if (first) {
+        active.state = INTRO;
+        console.log("intro: ABORTED -> INTRO");
+        node.addEventListener("introend", onIntroEnd);
+      }
+    } else if (active.state === UNDO) {
+      if (first) {
+        active.state = INTRO_DELAYED;
+        console.log("intro: UNDO -> INTRO_DELAYED");
+        config.delay = active.delay + (config.delay ?? 0);
+        node.addEventListener("introend", onIntroEnd);
+      }
+    } else if (active.state === INTRO) {
+      // second
+      if (first) {
+        console.warn("intro", active.state);
+      }
     } else {
-      console.warn(intro, { state });
+      console.warn("intro", active.state);
     }
     return config;
   }
 
-  function onIntroEnd() {
-    introNode?.removeEventListener("introend", onIntroEnd);
-    if (state === INTRO) {
-      state = IDLE;
-      console.log("introEnd: INTRO -> IDLE");
-      introNode = undefined;
-      outroNode = undefined;
-    } else if (state === INTRO_DELAYED) {
-      state = IDLE;
-      console.log("introEnd: INTRO_DELAYED -> IDLE");
-      outroNode?.removeEventListener("outroend", onOutroEnd);
-      introNode = undefined;
-      outroNode = undefined;
+  function onIntroEnd(e: any) {
+    const node = e.target;
+    node.removeEventListener("introend", onIntroEnd);
+
+    const [ref, id] = findActive(node);
+    if (!ref) {
+      return;
+    }
+    if (ref.state === INTRO) {
+      ref.state = COMPLETED;
+      console.log("introEnd: INTRO -> COMPLETED");
+      delete concurrent[id];
+    } else if (ref.state === INTRO_DELAYED) {
+      ref.state = COMPLETED;
+      console.log("introEnd: INTRO_DELAYED -> COMPLETED");
+      ref.out.removeEventListener("outroend", onOutroEnd);
+      delete concurrent[id];
     } else {
-      console.warn("introEnd:", { state });
+      console.warn("introEnd:", ref.state);
     }
   }
 

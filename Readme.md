@@ -2,7 +2,7 @@
 
 ## States
 
-IDLE
+READY
 OUTRO
 INTRO_DELAYED
 INTRO
@@ -11,13 +11,14 @@ UNDO (intro was visible)
 
 ## State mutatioms
 
-IDLE -> OUTRO
-OUTRO -> DELAYED_INTRO
-OUTRO -> INTRO (outro duration was 0)
-DELAYED_INTRO -> INTRO
-DELAYED_INTRO -> ABORTED
-INTRO -> IDLE
-INTRO -> UNDO
-
-ABORTED -> INTRO
-UNDO -> INTRO_DELAYED
+| Transition               | Reason                                          |
+| ------------------------ | ----------------------------------------------- |
+| READY -> OUTRO           | the transition started                          |
+| OUTRO -> DELAYED_INTRO   | the intro started (with delay)                  |
+| OUTRO -> INTRO           | the intro started (no outro duration, no delay) |
+| DELAYED_INTRO -> INTRO   | the outro completed                             |
+| DELAYED_INTRO -> ABORTED | a new outro started during outro                |
+| INTRO -> READY           | the transition ended                            |
+| INTRO -> UNDO            | a new outro started during intro                |
+| ABORTED -> INTRO         |
+| UNDO -> INTRO_DELAYED    |
