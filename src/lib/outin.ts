@@ -1,7 +1,7 @@
 import { append_styles } from "svelte/internal";
 import type { TransitionConfig } from "svelte/transition";
 
-type Transition = (node: HTMLElement, options?: any) => TransitionConfig;
+type Transition = (node: Element, options?: any) => TransitionConfig;
 function outin<T extends Transition>(settings: {
   transition: T | [T, Parameters<T>[1]];
 }): [T, T];
@@ -14,11 +14,32 @@ function outin<O extends Transition, I extends Transition>(settings: {
   out?: O | [O, Parameters<O>[1]];
   in?: I | [I, Parameters<I>[1]];
 }): [O, I] {
-  const [IDLE, OUTRO, INTRO_DELAYED, INTRO, ABORTED, UNDO] = [1, 2, 3, 4, 5, 6];
+  const states = [1, 2, 3, 4, 5, 6, 7] as const;
+  const [INIT, OUTRO, INTRO_DELAYED, INTRO, COMPLETED, ABORTED, UNDO] = states;
   const className = "svelte-outin";
 
-  let state = IDLE;
-  let delay = 0;
+  type OutInActive = {
+    state: typeof states[number];
+    delay: number;
+    out: Element;
+    in?: Element;
+  };
+  const concurrent: Record<number | string, OutInActive> = {};
+  function findActive(
+    node: Element
+  ): [OutInActive | undefined, string | number] {
+    const found = Object.entries(concurrent).find(
+      ([, entry]) => entry.out === node || entry.in === node
+    );
+    if (found) {
+      return [found[1], found[0]];
+    }
+    return [undefined, -1];
+  }
+  let idle = true;
+  const starting: OutInActive[] = [];
+  let autoincrement = 0;
+
   function splitOptions<T extends Transition>(
     transition: T | [T, Parameters<T>[1]]
   ): [Transition, Parameters<T>[1]] {
@@ -31,79 +52,139 @@ function outin<O extends Transition, I extends Transition>(settings: {
     ? splitOptions(settings.in)
     : splitOptions(settings.transition as Transition);
 
-  let outroNode: HTMLElement | undefined;
-  function outro(node: HTMLElement, options: any): TransitionConfig {
+  function outro(node: Element, options: any): TransitionConfig {
     const config = outFn(node, { ...outParams, ...options });
-
-    outroNode?.removeEventListener("outroend", onOutroEnd);
-    outroNode?.classList.remove(className);
-    outroNode = node;
-    const { position } = window.getComputedStyle(outroNode);
+    const { position } = window.getComputedStyle(node);
     if (["fixed", "absolute"].indexOf(position) === -1) {
       append_styles(
         node,
         "outin",
         `.svelte-outin { position: absolute !important; }`
       );
-      outroNode.classList.add(className);
+      node.classList.add(className);
     }
-
-    delay = (config.duration ?? 0) + (config.delay ?? 0);
-    if (state === IDLE) {
-      state = OUTRO;
-      outroNode.addEventListener("outroend", onOutroEnd);
-    } else if (state === INTRO) {
-      state = UNDO;
-    } else if (state === INTRO_DELAYED) {
-      state = ABORTED;
+    let [active] = findActive(node);
+    if (active) {
+      if (idle) {
+        active.out = node;
+        active.in = undefined;
+      }
+    } else if (idle) {
+      active = {
+        delay: (config.duration ?? 0) + (config.delay ?? 0),
+        out: node,
+        in: undefined,
+        state: INIT,
+      };
+      autoincrement += 1;
+      concurrent[autoincrement] = active;
+    } else {
+      return config;
+    }
+    if (idle) {
+      starting.push(active);
+    }
+    if (active.state === INIT) {
+      if (idle) {
+        active.state = OUTRO;
+        node.addEventListener("outroend", onOutroEnd);
+      }
+    } else if (active.state === INTRO) {
+      active.state = UNDO;
+    } else if (active.state === INTRO_DELAYED) {
+      active.state = ABORTED;
     }
     return config;
   }
 
-  function onOutroEnd() {
-    outroNode?.removeEventListener("outroend", onOutroEnd);
-    if (state === INTRO_DELAYED) {
-      state = INTRO;
+  function onOutroEnd(e: any) {
+    const node = e.target;
+    node.removeEventListener("outroend", onOutroEnd);
+
+    const [active] = findActive(node);
+    if (!active) {
+      return;
+    }
+    if (active.state === INTRO_DELAYED) {
+      active.state = INTRO;
     }
   }
 
-  let introNode: HTMLElement | undefined;
-  function intro(node: HTMLElement, options: any): TransitionConfig {
-    introNode?.removeEventListener("introend", onIntroEnd);
-    introNode = node;
-    introNode.classList.remove(className);
-
+  function intro(node: Element, options: any): TransitionConfig {
+    node.classList.remove(className);
     const config = inFn(node, {
       ...inParams,
       ...options,
     });
-    if (state === OUTRO) {
-      introNode.addEventListener("introend", onIntroEnd);
-      if (delay === 0) {
-        state = INTRO;
-      } else {
-        config.delay = delay + (config.delay ?? 0);
-        state = INTRO_DELAYED;
+
+    let [active] = findActive(node);
+    if (idle) {
+      const startIndex = starting.findIndex((start) => start.in === undefined);
+      let last = true;
+      if (startIndex !== -1) {
+        active = starting[startIndex];
+        active.in = node;
+        last = startIndex === starting.length - 1;
       }
-    } else if (state === ABORTED) {
-      state = INTRO;
-      introNode.addEventListener("introend", onIntroEnd);
-    } else if (state === UNDO) {
-      state = INTRO_DELAYED;
-      config.delay = delay + (config.delay ?? 0);
-      introNode.addEventListener("introend", onIntroEnd);
+      if (last) {
+        idle = true;
+        starting.length = 0;
+      }
+    }
+    if (!active) {
+      idle = false;
+      starting.length = 0;
+      return config;
+    }
+
+    if (!active.in) {
+      active.in = node;
+    }
+    const first = active.in === node;
+    if (active.state === OUTRO) {
+      if (active.delay === 0) {
+        if (first) {
+          active.state = INTRO;
+          node.addEventListener("introend", onIntroEnd);
+        }
+      } else {
+        config.delay = active.delay + (config.delay ?? 0);
+        if (first) {
+          active.state = INTRO_DELAYED;
+          node.addEventListener("introend", onIntroEnd);
+        }
+      }
+    } else if (active.state === INTRO_DELAYED) {
+      config.delay = active.delay + (config.delay ?? 0);
+    } else if (active.state === ABORTED) {
+      if (first) {
+        active.state = INTRO;
+        node.addEventListener("introend", onIntroEnd);
+      }
+    } else if (active.state === UNDO) {
+      if (first) {
+        active.state = INTRO_DELAYED;
+        config.delay = active.delay + (config.delay ?? 0);
+        node.addEventListener("introend", onIntroEnd);
+      }
     }
     return config;
   }
 
-  function onIntroEnd() {
-    introNode?.removeEventListener("introend", onIntroEnd);
-    if (state === INTRO_DELAYED) {
-      outroNode?.removeEventListener("outroend", onOutroEnd);
+  function onIntroEnd(e: any) {
+    e.target.removeEventListener("introend", onIntroEnd);
+    const [ref, id] = findActive(e.target);
+    if (!ref) {
+      return;
     }
-    state = IDLE;
-    introNode = undefined;
-    outroNode = undefined;
+    if (ref.state === INTRO) {
+      ref.state = COMPLETED;
+      delete concurrent[id];
+    } else if (ref.state === INTRO_DELAYED) {
+      ref.state = COMPLETED;
+      ref.out.removeEventListener("outroend", onOutroEnd);
+      delete concurrent[id];
+    }
   }
 
   return [outro as O, intro as I];

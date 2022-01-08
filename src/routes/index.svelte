@@ -1,5 +1,5 @@
 <script lang="ts">
-  import outin from "$lib/outin-verbose";
+  import outin from "$lib/outin";
   import { onMount } from "svelte";
   import { fly } from "svelte/transition";
 
@@ -7,8 +7,8 @@
   const outConfig = { x: 20, duration: 1000 };
 
   const [flyOut, flyIn] = outin({
-    in: [fly, inConfig],
-    out: [fly, outConfig],
+    in: (node, options) => fly(node, { ...inConfig, ...options }),
+    out: (node, options) => fly(node, { ...outConfig, ...options }),
   });
 
   let value = true;
@@ -60,8 +60,8 @@
     <div class="before" />
     {#if value}
       <div
-        in:flyIn
-        out:flyOut
+        in:flyIn={{ duration: 300 }}
+        out:flyOut={{ duration: 300 }}
         on:introstart={instrument("Truty2 introstart")}
         on:introend={instrument("Truty2 introend")}
         on:outrostart={instrument("Truty2 outrostart")}

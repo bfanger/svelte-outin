@@ -3,17 +3,15 @@ import { append_styles } from "svelte/internal";
 import type { TransitionConfig } from "svelte/transition";
 
 type Transition = (node: Element, options?: any) => TransitionConfig;
-function outin<T extends Transition>(settings: {
-  transition: T | [T, Parameters<T>[1]];
-}): [T, T];
+function outin<T extends Transition>(settings: { transition: T }): [T, T];
 function outin<O extends Transition, I extends Transition>(settings: {
-  out: O | [O, Parameters<O>[1]];
-  in: I | [I, Parameters<I>[1]];
+  out: O;
+  in: I;
 }): [O, I];
 function outin<O extends Transition, I extends Transition>(settings: {
   transition?: I | [I, Parameters<I>[1]];
-  out?: O | [O, Parameters<O>[1]];
-  in?: I | [I, Parameters<I>[1]];
+  out?: O;
+  in?: I;
 }): [O, I] {
   const states = [
     "INIT",
@@ -49,20 +47,11 @@ function outin<O extends Transition, I extends Transition>(settings: {
   const starting: OutInActive[] = [];
   let autoincrement = 0;
 
-  function splitOptions<T extends Transition>(
-    transition: T | [T, Parameters<T>[1]]
-  ): [Transition, Parameters<T>[1]] {
-    return Array.isArray(transition) ? transition : [transition, {}];
-  }
-  const [outFn, outParams] = settings.out
-    ? splitOptions(settings.out)
-    : splitOptions(settings.transition as Transition);
-  const [inFn, inParams] = settings.in
-    ? splitOptions(settings.in)
-    : splitOptions(settings.transition as Transition);
+  const outFn = settings.out || (settings.transition as Transition);
+  const inFn = settings.in || (settings.transition as Transition);
 
   function outro(node: Element, options: any): TransitionConfig {
-    const config = outFn(node, { ...outParams, ...options });
+    const config = outFn(node, options);
     const { position } = window.getComputedStyle(node);
     if (["fixed", "absolute"].indexOf(position) === -1) {
       append_styles(
@@ -143,11 +132,7 @@ function outin<O extends Transition, I extends Transition>(settings: {
 
   function intro(node: Element, options: any): TransitionConfig {
     node.classList.remove(className);
-    const config = inFn(node, {
-      ...inParams,
-      ...options,
-    });
-
+    const config = inFn(node, options);
     let [active] = findActive(node);
     if (idle) {
       if (active) {
